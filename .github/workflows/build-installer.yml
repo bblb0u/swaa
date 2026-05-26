@@ -1,0 +1,128 @@
+name: build-installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "**/*"
+      - ".github/workflows/build-installer.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      release_name: ${{ steps.meta.outputs.release_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Set Build Version
+        id: meta
+        shell: pwsh
+        run: |
+          $date = [DateTimeOffset]::UtcNow.ToOffset([TimeSpan]::FromHours(8))
+          $version = $date.ToString("yyyyMMdd")
+          $assemblyVersion = "{0}.{1}.{2}.0" -f $date.Year, $date.Month, $date.Day
+          $assemblyInfoPath = "Properties\AssemblyInfo.cs"
+          $installerPath = "installer\SWAutoAttributes.iss"
+
+          $assemblyInfo = Get-Content $assemblyInfoPath -Raw
+          $assemblyInfo = $assemblyInfo -replace 'AssemblyCompany\("[^"]*"\)', 'AssemblyCompany("canghai")'
+          $assemblyInfo = $assemblyInfo -replace 'AssemblyVersion\("[^"]*"\)', "AssemblyVersion(`"$assemblyVersion`")"
+          $assemblyInfo = $assemblyInfo -replace 'AssemblyFileVersion\("[^"]*"\)', "AssemblyFileVersion(`"$assemblyVersion`")"
+          $assemblyInfo = $assemblyInfo -replace 'AssemblyInformationalVersion\("[^"]*"\)', "AssemblyInformationalVersion(`"$version`")"
+          Set-Content -Path $assemblyInfoPath -Value $assemblyInfo -NoNewline
+
+          $installer = Get-Content $installerPath -Raw
+          $installer = $installer -replace '#define AppVersion "[^"]*"', "#define AppVersion `"$version`""
+          $installer = $installer -replace '#define AppFileVersion "[^"]*"', "#define AppFileVersion `"$assemblyVersion`""
+          $installer = $installer -replace '#define AppPublisher "[^"]*"', '#define AppPublisher "canghai"'
+          Set-Content -Path $installerPath -Value $installer -NoNewline
+
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "tag=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "release_name=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Restore + Build Addin
+        run: msbuild SWAutoAttributes.sln /restore /p:Configuration=Release
+
+      - name: Build Installer
+        shell: pwsh
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\SWAutoAttributes.iss"'
+
+      - name: Upload Installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: SW_Auto_Attributes_Setup_${{ steps.meta.outputs.version }}
+          path: installer\SW_Auto_Attributes_Setup.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Installer Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: SW_Auto_Attributes_Setup_${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Move Release Tag To Current Commit
+        uses: actions/github-script@v7
+        env:
+          TAG_NAME: ${{ needs.build.outputs.tag }}
+          TARGET_SHA: ${{ github.sha }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const tag = process.env.TAG_NAME;
+            const sha = process.env.TARGET_SHA;
+            const ref = `tags/${tag}`;
+
+            try {
+              await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref,
+              });
+              await github.rest.git.updateRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref,
+                sha,
+                force: true,
+              });
+            } catch (error) {
+              if (error.status === 404) {
+                await github.rest.git.createRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `refs/${ref}`,
+                  sha,
+                });
+              } else {
+                throw error;
+              }
+            }
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: ${{ github.repository }}
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: ${{ needs.build.outputs.release_name }}
+          generate_release_notes: false
+          body: ""
+          overwrite_files: true
+          files: dist/SW_Auto_Attributes_Setup.exe
