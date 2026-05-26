@@ -31,29 +31,7 @@ jobs:
       - name: Set Build Version
         id: meta
         shell: pwsh
-        run: |
-          $date = [DateTimeOffset]::UtcNow.ToOffset([TimeSpan]::FromHours(8))
-          $version = $date.ToString("yyyyMMdd")
-          $assemblyVersion = "{0}.{1}.{2}.0" -f $date.Year, $date.Month, $date.Day
-          $assemblyInfoPath = "Properties\AssemblyInfo.cs"
-          $installerPath = "installer\SWAutoAttributes.iss"
-
-          $assemblyInfo = Get-Content $assemblyInfoPath -Raw
-          $assemblyInfo = $assemblyInfo -replace 'AssemblyCompany\("[^"]*"\)', 'AssemblyCompany("canghai")'
-          $assemblyInfo = $assemblyInfo -replace 'AssemblyVersion\("[^"]*"\)', "AssemblyVersion(`"$assemblyVersion`")"
-          $assemblyInfo = $assemblyInfo -replace 'AssemblyFileVersion\("[^"]*"\)', "AssemblyFileVersion(`"$assemblyVersion`")"
-          $assemblyInfo = $assemblyInfo -replace 'AssemblyInformationalVersion\("[^"]*"\)', "AssemblyInformationalVersion(`"$version`")"
-          Set-Content -Path $assemblyInfoPath -Value $assemblyInfo -NoNewline
-
-          $installer = Get-Content $installerPath -Raw
-          $installer = $installer -replace '#define AppVersion "[^"]*"', "#define AppVersion `"$version`""
-          $installer = $installer -replace '#define AppFileVersion "[^"]*"', "#define AppFileVersion `"$assemblyVersion`""
-          $installer = $installer -replace '#define AppPublisher "[^"]*"', '#define AppPublisher "canghai"'
-          Set-Content -Path $installerPath -Value $installer -NoNewline
-
-          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "tag=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "release_name=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        run: ./scripts/update-build-version.ps1
 
       - name: Restore + Build Addin
         run: msbuild SWAutoAttributes.sln /restore /p:Configuration=Release
